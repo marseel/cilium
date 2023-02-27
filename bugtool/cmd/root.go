@@ -70,6 +70,7 @@ var (
 	enableMarkdown           bool
 	archivePrefix            string
 	getPProf                 bool
+	getGops                  bool
 	pprofDebug               int
 	envoyDump                bool
 	envoyMetrics             bool
@@ -83,6 +84,7 @@ var (
 func init() {
 	BugtoolRootCmd.Flags().BoolVar(&archive, "archive", true, "Create archive when false skips deletion of the output directory")
 	BugtoolRootCmd.Flags().BoolVar(&getPProf, "get-pprof", false, "When set, only gets the pprof traces from the cilium-agent binary")
+	BugtoolRootCmd.Flags().BoolVar(&getGops, "gops-pprof", false, "Get pprof/tracke/heap from gops")
 	BugtoolRootCmd.Flags().IntVar(&pprofDebug, "pprof-debug", 1, "Debug pprof args")
 	BugtoolRootCmd.Flags().BoolVar(&envoyDump, "envoy-dump", true, "When set, dump envoy configuration from unix socket")
 	BugtoolRootCmd.Flags().BoolVar(&envoyMetrics, "envoy-metrics", true, "When set, dump envoy prometheus metrics from unix socket")
@@ -240,6 +242,13 @@ func runTool() {
 
 		if excludeObjectFiles {
 			removeObjectFiles(cmdDir, k8sPods)
+		}
+	}
+
+	if getGops {
+		err := getGopsData(cmdDir)
+		if err != nil {
+			fmt.Errorf("Error running gops: %v", err)
 		}
 	}
 
@@ -574,4 +583,53 @@ func downloadToFile(client *http.Client, url, file string) error {
 	}
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+func runCommand(prompt string) (string, error) {
+	out, err := exec.Command("bash", "-c", prompt).Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func getGopsOutputFilename(output string) string {
+	splited := strings.Split(output, "\n")
+	prefix := "saved to: "
+
+	for _, str := range splited {
+		fmt.Printf("Str: %s, prefix: %s, bool: %t\n", str, prefix, strings.Contains(str, prefix))
+		if strings.Contains(str, prefix) {
+			return strings.TrimSpace(strings.Split(str, prefix)[1])
+		}
+	}
+	return ""
+}
+
+func runGopsCommand(rootDir, command string) error {
+	cmd := fmt.Sprintf("gops %s $(pidof %s)", command, components.CiliumAgentName)
+	output, err := runCommand(cmd)
+	if err != nil {
+		return fmt.Errorf("Error running gops: %v", err)
+	}
+	fmt.Printf("Output:\n%s", output)
+	outputFilename := getGopsOutputFilename(output)
+	fmt.Printf("Output filename:\n%s", outputFilename)
+	_, err = runCommand(fmt.Sprintf("mv %s %s", outputFilename, rootDir))
+	if err != nil {
+		return fmt.Errorf("Error moving pprof: %v", err)
+	}
+	return nil
+}
+
+func getGopsData(rootDir string) error {
+	commands := []string{"pprof-cpu", "pprof-heap", "trace"}
+	for _, command := range commands {
+		err := runGopsCommand(rootDir, command)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
