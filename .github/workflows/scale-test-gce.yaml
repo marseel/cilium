@@ -3,6 +3,9 @@ name: Scale Test GCE
 on:
   schedule:
     - cron: '39 0 * * 1,4'
+  push:
+    branches:
+      - pr/learnitall/100-node-scale-test-cl2
 
 permissions:
   # To be able to access the repository with actions/checkout
@@ -54,7 +57,7 @@ jobs:
 
       - name: Set Environment Variables
         uses: ./.github/actions/set-env-variables
-      
+
       - name: Get Cilium's default values
         id: default_vars
         uses: ./.github/actions/helm-default
@@ -65,6 +68,7 @@ jobs:
         id: vars
         run: |
           SHA="${{ github.sha }}"
+          SHA="4cb094060d5a6b93313e222516c644ef5c51da07"
 
           # Setup Cilium install options
           CILIUM_INSTALL_DEFAULTS="${{ steps.default_vars.outputs.cilium_install_defaults }} \
