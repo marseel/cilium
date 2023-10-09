@@ -101,6 +101,7 @@ jobs:
           sed -i 's/$/ kops-linux-amd64/' kops-linux-amd64.sha256
           sha256sum --check kops-linux-amd64.sha256
           mv kops-linux-amd64 kops
+          chmod +x kops
 
       - name: Setup gcloud credentials
         uses: google-github-actions/auth@35b0e87d162680511bf346c299f71c9c5c379033 # v1.1.1
