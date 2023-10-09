@@ -5,7 +5,7 @@ on:
     - cron: '39 0 * * 1,4'
   push:
     branches:
-      - pr/learnitall/100-node-scale-test-cl2
+      - pr/marseel/100-node-scale-test-cl2
 
 permissions:
   # To be able to access the repository with actions/checkout
@@ -227,3 +227,12 @@ jobs:
             ${{ env.cluster_name }} \
             --state ${{ secrets.GCP_PERF_KOPS_STATE_STORE }} \
             --yes
+
+      - name: Export results to GS bucket
+        if: ${{ always() && steps.deploy.outcome != 'skipped' }}
+        run: |
+          # BUILD_ID needs to be an integer
+          BUILD_ID="$(date +%s)"
+          # TODO bucket for testing only
+          EXPORT_DIR="gs://marseel-cl2-test/scale-test-${{ github.ref }}/${BUILD_ID}/"
+          gsutil -m cp -R ./report $EXPORT_DIR
