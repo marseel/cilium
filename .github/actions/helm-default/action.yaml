@@ -22,6 +22,7 @@ runs:
         else
           SHA="${{ github.sha }}"
         fi
+        SHA="4cb094060d5a6b93313e222516c644ef5c51da07"
         echo sha=${SHA} >> $GITHUB_OUTPUT
 
         CILIUM_INSTALL_DEFAULTS="--chart-directory=install/kubernetes/cilium \
