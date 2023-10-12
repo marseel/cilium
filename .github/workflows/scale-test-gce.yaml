@@ -230,10 +230,12 @@ jobs:
             --yes
 
       - name: Export results to GS bucket
+        working-directory: ./perf-tests/clusterloader2
         if: ${{ always() && steps.deploy.outcome != 'skipped' }}
         run: |
+          ls ./report/
           # BUILD_ID needs to be an integer
           BUILD_ID="$(date +%s)"
           # TODO bucket for testing only
-          EXPORT_DIR="gs://marseel-cl2-test/scale-test-${{ github.ref }}/${BUILD_ID}/"
-          gsutil -m cp -R ./report $EXPORT_DIR
+          EXPORT_DIR="gs://marseel-cl2-test/scale-test-${{ github.ref_name }}/${BUILD_ID}/"
+          gsutil -m cp -R ./report/ $EXPORT_DIR
