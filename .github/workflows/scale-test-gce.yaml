@@ -210,6 +210,7 @@ jobs:
           cat ${{ env.cl2_config }}
       
       - name: Run CL2
+        id: run-cl2
         working-directory: ./perf-tests/clusterloader2
         run: |
           mkdir ./report
@@ -223,6 +224,12 @@ jobs:
             --report-dir=./report \
             --kubeconfig=$HOME/.kube/config
 
+      - name: Get sysdump
+        if: ${{ always() && steps.run-cl2.outcome != 'skipped' }}
+        run: |
+          cilium status
+          cilium sysdump --output-filename cilium-sysdump-final
+
       - name: Cleanup cluster
         if: ${{ always() && steps.deploy.outcome != 'skipped' }}
         run: |
@@ -231,13 +238,11 @@ jobs:
             --state ${{ secrets.GCP_PERF_KOPS_STATE_STORE }} \
             --yes
 
-      - name: Export results to GS bucket
-        working-directory: ./perf-tests/clusterloader2
-        if: ${{ always() && steps.deploy.outcome != 'skipped' }}
+      - name: Export results and sysdump to GS bucket
+        if: ${{ always() && steps.run-cl2.outcome != 'skipped' }}
         run: |
-          ls ./report/
           # BUILD_ID needs to be an integer
           BUILD_ID="$(date +%s)"
           # TODO bucket for testing only
           EXPORT_DIR="gs://marseel-cl2-test/logs/scale-test-${{ github.ref_name }}/${BUILD_ID}/artifacts/"
-          gsutil -m cp -R ./report/* $EXPORT_DIR
+          gsutil -m cp -R cilium-sysdump-final.zip ./perf-tests/clusterloader2/report/* $EXPORT_DIR
