@@ -6,7 +6,9 @@ on:
   # to the branch hourModulo value in the matrix
   schedule:
     - cron: '0 */1 * * *'
-
+  push:
+    branches:
+      - fix_azure_attempt3
 
 permissions:
   # To be able to access the repository with actions/checkout
@@ -44,6 +46,7 @@ jobs:
           HOUR=$(date +"%H")
           if (( HOUR % 6 == ${{ matrix.hourModulo }} )); then
             echo "Running scheduled workflows for branch ${{ matrix.branch }}"
+            exit 0
           else
             echo "Skipping scheduled workflows for branch ${{ matrix.branch }}"
             exit 0
