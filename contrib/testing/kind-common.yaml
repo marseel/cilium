@@ -1,5 +1,7 @@
 debug:
   enabled: true
+pprof:
+  enabled: true
 operator:
   nodeSelector:
     kubernetes.io/os: linux
