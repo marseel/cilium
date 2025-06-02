@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 
@@ -142,6 +143,7 @@ func (w *Watcher) startWatching(path string) (string, error) {
 	// path in the events however will remain the path of the symlink.
 	err := w.watcher.Add(path)
 	if err != nil {
+		time.Sleep(10 * time.Millisecond)
 		// if the path does not exist, try to watch its parent instead
 		if errors.Is(err, os.ErrNotExist) {
 			parent := filepath.Dir(path)
@@ -209,7 +211,7 @@ func (w *Watcher) loop() {
 	for {
 		select {
 		case event := <-w.watcher.Events:
-			w.logger.Debug(
+			w.logger.Info(
 				"Received fsnotify event",
 				logfields.Path, event.Name,
 				logfields.Operation, event.Op,
