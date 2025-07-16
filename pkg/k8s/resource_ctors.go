@@ -24,12 +24,10 @@ import (
 	"github.com/cilium/cilium/pkg/k8s/resource"
 	slim_corev1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/core/v1"
 	slim_discoveryv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1"
-	slim_discoveryv1beta1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/discovery/v1beta1"
 	slim_networkingv1 "github.com/cilium/cilium/pkg/k8s/slim/k8s/api/networking/v1"
 	"github.com/cilium/cilium/pkg/k8s/synced"
 	"github.com/cilium/cilium/pkg/k8s/types"
 	"github.com/cilium/cilium/pkg/k8s/utils"
-	"github.com/cilium/cilium/pkg/k8s/version"
 	"github.com/cilium/cilium/pkg/logging/logfields"
 	"github.com/cilium/cilium/pkg/node"
 	"github.com/cilium/cilium/pkg/promise"
@@ -358,29 +356,12 @@ func (lw *endpointsListerWatcher) getSourceObj() k8sRuntime.Object {
 
 func (lw *endpointsListerWatcher) getListerWatcher() cache.ListerWatcher {
 	lw.once.Do(func() {
-		if lw.enableK8sEndpointSlice && version.Capabilities().EndpointSlice {
-			if version.Capabilities().EndpointSliceV1 {
-				lw.logger.Info("Using discoveryv1.EndpointSlice")
-				lw.cachedListerWatcher = utils.ListerWatcherFromTyped[*slim_discoveryv1.EndpointSliceList](
-					lw.cs.Slim().DiscoveryV1().EndpointSlices(""),
-				)
-				lw.sourceObj = &slim_discoveryv1.EndpointSlice{}
-			} else {
-				lw.logger.Info("Using discoveryv1beta1.EndpointSlice")
-				lw.cachedListerWatcher = utils.ListerWatcherFromTyped[*slim_discoveryv1beta1.EndpointSliceList](
-					lw.cs.Slim().DiscoveryV1beta1().EndpointSlices(""),
-				)
-				lw.sourceObj = &slim_discoveryv1beta1.EndpointSlice{}
-			}
-			lw.cachedListerWatcher = utils.ListerWatcherWithModifiers(lw.cachedListerWatcher, lw.endpointSlicesOptsModifiers...)
-		} else {
-			lw.logger.Info("Using v1.Endpoints")
-			lw.cachedListerWatcher = utils.ListerWatcherFromTyped[*slim_corev1.EndpointsList](
-				lw.cs.Slim().CoreV1().Endpoints(""),
-			)
-			lw.sourceObj = &slim_corev1.Endpoints{}
-			lw.cachedListerWatcher = utils.ListerWatcherWithModifiers(lw.cachedListerWatcher, lw.endpointsOptsModifiers...)
-		}
+		lw.logger.Info("Using discoveryv1.EndpointSlice")
+		lw.cachedListerWatcher = utils.ListerWatcherFromTyped[*slim_discoveryv1.EndpointSliceList](
+			lw.cs.Slim().DiscoveryV1().EndpointSlices(""),
+		)
+		lw.sourceObj = &slim_discoveryv1.EndpointSlice{}
+		lw.cachedListerWatcher = utils.ListerWatcherWithModifiers(lw.cachedListerWatcher, lw.endpointSlicesOptsModifiers...)
 	})
 	return lw.cachedListerWatcher
 }
@@ -395,12 +376,8 @@ func (lw *endpointsListerWatcher) Watch(opts metav1.ListOptions) (watch.Interfac
 
 func transformEndpoint(logger *slog.Logger, obj any) (any, error) {
 	switch obj := obj.(type) {
-	case *slim_corev1.Endpoints:
-		return ParseEndpoints(obj), nil
 	case *slim_discoveryv1.EndpointSlice:
 		return ParseEndpointSliceV1(logger, obj), nil
-	case *slim_discoveryv1beta1.EndpointSlice:
-		return ParseEndpointSliceV1Beta1(obj), nil
 	case cache.DeletedFinalStateUnknown:
 		return obj, nil
 	default:
