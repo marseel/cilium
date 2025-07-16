@@ -35,8 +35,6 @@ import (
 
 // Config defines the configuration options for k8s resources.
 type Config struct {
-	EnableK8sEndpointSlice bool
-
 	// K8sServiceProxyName is the value of service.kubernetes.io/service-proxy-name label,
 	// that identifies the service objects Cilium should handle.
 	// If the provided value is an empty string, Cilium will manage service objects when
@@ -47,8 +45,7 @@ type Config struct {
 
 // DefaultConfig represents the default k8s resources config values.
 var DefaultConfig = Config{
-	EnableK8sEndpointSlice: true,
-	K8sServiceProxyName:    "",
+	K8sServiceProxyName: "",
 }
 
 const (
@@ -58,8 +55,6 @@ const (
 
 // Flags implements the cell.Flagger interface.
 func (def Config) Flags(flags *pflag.FlagSet) {
-	flags.Bool("enable-k8s-endpoint-slice", def.EnableK8sEndpointSlice, "Enables k8s EndpointSlice feature in Cilium if the k8s cluster supports it")
-	flags.MarkDeprecated("enable-k8s-endpoint-slice", "The flag will be removed in v1.19. The feature will be unconditionally enabled by default.")
 	flags.String("k8s-service-proxy-name", def.K8sServiceProxyName, "Value of K8s service-proxy-name label for which Cilium handles the services (empty = all services without service.kubernetes.io/service-proxy-name label)")
 }
 
@@ -304,10 +299,6 @@ func EndpointsResourceWithIndexers(logger *slog.Logger, lc cell.Lifecycle, cfg C
 	if !cs.IsEnabled() {
 		return nil, nil
 	}
-	endpointsOptsModifier, err := utils.GetServiceAndEndpointListOptionsModifier(cfg.K8sServiceProxyName)
-	if err != nil {
-		return nil, err
-	}
 
 	endpointSliceOptsModifier, err := utils.GetEndpointSliceListOptionsModifier()
 	if err != nil {
@@ -317,8 +308,6 @@ func EndpointsResourceWithIndexers(logger *slog.Logger, lc cell.Lifecycle, cfg C
 	lw := &endpointsListerWatcher{
 		logger:                      logger,
 		cs:                          cs,
-		enableK8sEndpointSlice:      cfg.EnableK8sEndpointSlice,
-		endpointsOptsModifiers:      append(opts, endpointsOptsModifier),
 		endpointSlicesOptsModifiers: append(opts, endpointSliceOptsModifier),
 	}
 
@@ -340,8 +329,6 @@ func EndpointsResourceWithIndexers(logger *slog.Logger, lc cell.Lifecycle, cfg C
 type endpointsListerWatcher struct {
 	logger                      *slog.Logger
 	cs                          client.Clientset
-	enableK8sEndpointSlice      bool
-	endpointsOptsModifiers      []func(*metav1.ListOptions)
 	endpointSlicesOptsModifiers []func(*metav1.ListOptions)
 	sourceObj                   k8sRuntime.Object
 
