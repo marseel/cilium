@@ -25,6 +25,7 @@ import (
 	"github.com/cilium/cilium/pkg/maps/lxcmap"
 	nodeTypes "github.com/cilium/cilium/pkg/node/types"
 	"github.com/cilium/cilium/pkg/option"
+	"github.com/cilium/cilium/pkg/time"
 )
 
 func (d *Daemon) WaitForEndpointRestore(ctx context.Context) error {
@@ -328,7 +329,7 @@ func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState, endpoi
 		endpointsToRegenerate = append(endpointsToRegenerate, ep)
 	}
 
-	// Trigger regeneration for relevant restored endopints in a separate goroutine.
+	// Trigger regeneration for relevant restored endpoints in a separate goroutine.
 	go d.handleRestoredEndpointsRegeneration(endpointsToRegenerate, endpointsRegenerator)
 
 	var endpointCleanupCompleted sync.WaitGroup
@@ -357,13 +358,37 @@ func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState, endpoi
 	}()
 }
 
+// Trigger asynchronous regeneration of restored endpoints.
+//
+// This method assumes that all the endpoints for which regeneration is requested are
+// already exposed to EndpointManager. It waits until the Endpoint API fence is unblocked
+// before regenerating all remaining live endpoints.
+//
+// Once complete, this method closes the daemon 'endpointRestoreComplete' channel.
 func (d *Daemon) handleRestoredEndpointsRegeneration(endpoints []*endpoint.Endpoint, endpointsRegenerator *endpoint.Regenerator) {
+	startTime := time.Now()
+	// Wait for Endpoint DeletionQueue to be processed first so we can avoid
+	// expensive regeneration for already deleted endpoints.
+	_ = d.endpointAPIFence.Wait(context.Background())
+
+	d.logger.Debug(
+		"Endpoint API fence unblocked, attempting regeneration for alive endpoints",
+		logfields.Duration, time.Since(startTime),
+	)
+
 	regenWg := &sync.WaitGroup{}
 	for _, ep := range endpoints {
-		d.logger.Info(
-			"Successfully restored endpoint. Scheduling regeneration",
-			logfields.EndpointID, ep.ID,
-		)
+		// Check if the endpoint still exists in EndpointManager.
+		epFromLookup := d.endpointManager.LookupCiliumID(ep.ID)
+		if epFromLookup == nil {
+			d.logger.Debug(
+				"Endpoint missing in EndpointManager, assuming already deleted",
+				logfields.EndpointID, ep.ID,
+			)
+			continue
+		}
+
+		d.logger.Info("Scheduling restored endpoint regeneration", logfields.EndpointID, ep.ID)
 
 		regenWg.Add(1)
 		go func(ep *endpoint.Endpoint, wg *sync.WaitGroup) {
