@@ -300,56 +300,36 @@ func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState, endpoi
 		}
 	}
 
-	if option.Config.EnableIPSec {
-		// To support v1.18 VinE upgrades, we need to restore the host
-		// endpoint before any other endpoint, to ensure a drop-less upgrade.
-		// This is because in v1.18 'bpf_lxc' programs stop issuing IPsec hooks
-		// which trigger encryption.
-		//
-		// Instead, 'bpf_host' is responsible for performing IPsec hooks.
-		// Therefore, we want 'bpf_host' to regenerate BEFORE 'bpf_lxc' so the
-		// IPsec hooks are always present while 'bpf_lxc' programs regen,
-		// ensuring no IPsec leaks occur.
-		//
-		// This can be removed in v1.19.
-		for _, ep := range state.restored {
-			if ep.IsHost() {
-				d.logger.Info("Successfully restored endpoint. Scheduling regeneration", logfields.EndpointID, ep.ID)
-				if err := ep.RegenerateAfterRestore(endpointsRegenerator, d.endpointMetadata.FetchK8sMetadataForEndpoint); err != nil {
-					d.logger.Debug(
-						"error regenerating during restore",
-						logfields.Error, err,
-						logfields.EndpointID, ep.ID,
-					)
-				}
-				break
-			}
-		}
-	}
-
-	regenWg := &sync.WaitGroup{}
+	endpointsToRegenerate := make([]*endpoint.Endpoint, 0, len(state.restored))
 	for _, ep := range state.restored {
 		if ep.IsHost() && option.Config.EnableIPSec {
-			// The host endpoint was handled above.
-			continue
-		}
-		d.logger.Info(
-			"Successfully restored endpoint. Scheduling regeneration",
-			logfields.EndpointID, ep.ID,
-		)
-		regenWg.Add(1)
-		go func(ep *endpoint.Endpoint, wg *sync.WaitGroup) {
-			defer wg.Done()
-
+			// To support v1.18 VinE upgrades, we need to restore the host
+			// endpoint before any other endpoint, to ensure a drop-less upgrade.
+			// This is because in v1.18 'bpf_lxc' programs stop issuing IPsec hooks
+			// which trigger encryption.
+			//
+			// Instead, 'bpf_host' is responsible for performing IPsec hooks.
+			// Therefore, we want 'bpf_host' to regenerate BEFORE 'bpf_lxc' so the
+			// IPsec hooks are always present while 'bpf_lxc' programs regen,
+			// ensuring no IPsec leaks occur.
+			//
+			// This can be removed in v1.19.
+			d.logger.Info("Successfully restored Host endpoint. Scheduling regeneration", logfields.EndpointID, ep.ID)
 			if err := ep.RegenerateAfterRestore(endpointsRegenerator, d.endpointMetadata.FetchK8sMetadataForEndpoint); err != nil {
 				d.logger.Debug(
-					"Error regenerating endpoint during restore",
+					"Error regenerating Host endpoint during restore",
 					logfields.Error, err,
 					logfields.EndpointID, ep.ID,
 				)
 			}
-		}(ep, regenWg)
+			continue
+		}
+
+		endpointsToRegenerate = append(endpointsToRegenerate, ep)
 	}
+
+	// Trigger regeneration for relevant restored endopints in a separate goroutine.
+	go d.handleRestoredEndpointsRegeneration(endpointsToRegenerate, endpointsRegenerator)
 
 	var endpointCleanupCompleted sync.WaitGroup
 	for _, ep := range state.toClean {
@@ -375,12 +355,33 @@ func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState, endpoi
 		}
 		close(d.endpointInitialPolicyComplete)
 	}()
+}
 
-	go func() {
-		regenWg.Wait()
-		d.logger.Info("Finished regenerating restored endpoints")
-		close(d.endpointRestoreComplete)
-	}()
+func (d *Daemon) handleRestoredEndpointsRegeneration(endpoints []*endpoint.Endpoint, endpointsRegenerator *endpoint.Regenerator) {
+	regenWg := &sync.WaitGroup{}
+	for _, ep := range endpoints {
+		d.logger.Info(
+			"Successfully restored endpoint. Scheduling regeneration",
+			logfields.EndpointID, ep.ID,
+		)
+
+		regenWg.Add(1)
+		go func(ep *endpoint.Endpoint, wg *sync.WaitGroup) {
+			defer wg.Done()
+
+			if err := ep.RegenerateAfterRestore(endpointsRegenerator, d.endpointMetadata.FetchK8sMetadataForEndpoint); err != nil {
+				d.logger.Debug(
+					"Error regenerating endpoint during restore",
+					logfields.Error, err,
+					logfields.EndpointID, ep.ID,
+				)
+			}
+		}(ep, regenWg)
+	}
+
+	regenWg.Wait()
+	d.logger.Info("Finished regenerating restored endpoints")
+	close(d.endpointRestoreComplete)
 }
 
 func (d *Daemon) allocateIPsLocked(ep *endpoint.Endpoint) (err error) {
