@@ -278,10 +278,6 @@ func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState, endpoi
 	// match this Cilium userspace instance. If not, it must be removed
 	ctmap.DeleteIfUpgradeNeeded()
 
-	// we need to signalize when the endpoints are regenerated, i.e., when
-	// they have finished to rebuild after being restored.
-	epRegenerated := make(chan bool, len(state.restored))
-
 	// Insert all endpoints into the endpoint list first before starting
 	// the regeneration. This is required to ensure that if an individual
 	// regeneration causes an identity change of an endpoint, the new
@@ -325,15 +321,13 @@ func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState, endpoi
 						logfields.Error, err,
 						logfields.EndpointID, ep.ID,
 					)
-					epRegenerated <- false
-				} else {
-					epRegenerated <- true
 				}
 				break
 			}
 		}
 	}
 
+	regenWg := &sync.WaitGroup{}
 	for _, ep := range state.restored {
 		if ep.IsHost() && option.Config.EnableIPSec {
 			// The host endpoint was handled above.
@@ -343,18 +337,18 @@ func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState, endpoi
 			"Successfully restored endpoint. Scheduling regeneration",
 			logfields.EndpointID, ep.ID,
 		)
-		go func(ep *endpoint.Endpoint, epRegenerated chan<- bool) {
+		regenWg.Add(1)
+		go func(ep *endpoint.Endpoint, wg *sync.WaitGroup) {
+			defer wg.Done()
+
 			if err := ep.RegenerateAfterRestore(endpointsRegenerator, d.endpointMetadata.FetchK8sMetadataForEndpoint); err != nil {
 				d.logger.Debug(
-					"error regenerating during restore",
+					"Error regenerating endpoint during restore",
 					logfields.Error, err,
 					logfields.EndpointID, ep.ID,
 				)
-				epRegenerated <- false
-				return
 			}
-			epRegenerated <- true
-		}(ep, epRegenerated)
+		}(ep, regenWg)
 	}
 
 	var endpointCleanupCompleted sync.WaitGroup
@@ -383,25 +377,8 @@ func (d *Daemon) regenerateRestoredEndpoints(state *endpointRestoreState, endpoi
 	}()
 
 	go func() {
-		regenerated, total := 0, 0
-		if len(state.restored) > 0 {
-			for buildSuccess := range epRegenerated {
-				if buildSuccess {
-					regenerated++
-				}
-				total++
-				if total >= len(state.restored) {
-					break
-				}
-			}
-		}
-		close(epRegenerated)
-
-		d.logger.Info(
-			"Finished regenerating restored endpoints",
-			logfields.Regenerated, regenerated,
-			logfields.Total, total,
-		)
+		regenWg.Wait()
+		d.logger.Info("Finished regenerating restored endpoints")
 		close(d.endpointRestoreComplete)
 	}()
 }
