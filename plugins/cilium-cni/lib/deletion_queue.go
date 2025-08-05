@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/go-openapi/runtime"
 
 	"github.com/cilium/cilium/api/v1/models"
 	"github.com/cilium/cilium/pkg/client"
@@ -138,7 +141,42 @@ func (dc *DeletionFallbackClient) EndpointDelete(id string) error {
 // either by directly accessing the API or dropping in a queued-deletion file.
 func (dc *DeletionFallbackClient) EndpointDeleteMany(req *models.EndpointBatchDeleteRequest) error {
 	if dc.cli != nil {
-		return dc.cli.EndpointDeleteMany(req)
+		startTime := time.Now()
+		err := dc.cli.EndpointDeleteMany(req)
+		if err == nil {
+			dc.logger.Debug("Endpoint delete request successful",
+				logfields.Request, req,
+				logfields.Duration, time.Since(startTime),
+			)
+			return nil
+		}
+
+		status, ok := err.(runtime.ClientResponseStatus)
+		if !ok || !status.IsCode(http.StatusServiceUnavailable) {
+			// Propagate unhandled Endpoint delete errors.
+			return err
+		}
+
+		// Fallback to queuing endpoint delete if cilium Endpoint service is unavailable.
+		// Once ready, cilium-agent will process all the pending deletes in this queue.
+		dc.logger.Debug(
+			"Received ServiceUnavailable response from server for batch Endpoint Delete request",
+			logfields.Request, req,
+		)
+
+		// If we don't already have lock on the local endpoint deletion queue, try acquire it.
+		if dc.lockfile == nil {
+			dc.logger.Debug("Deletion Queue lock not already held, reprocessing delete request with locked queue")
+			if err = dc.tryQueueLock(); err != nil {
+				// LockFile nil check to make sure we don't end up in an inifinite loop.
+				return fmt.Errorf("failed to acquire deletion queue lock: %w", err)
+			}
+
+			// Once we have the lock reprocess the Endpoint delete request. This is to make sure
+			// we don't race with an already proccessed cilium-agent endpoint deletion queue while
+			// we waited to acquire the lock.
+			return dc.EndpointDeleteMany(req)
+		}
 	}
 
 	// fall-back mode
