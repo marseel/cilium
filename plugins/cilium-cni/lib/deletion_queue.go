@@ -37,6 +37,10 @@ const timeoutSeconds = 10
 // the maximum number of queued deletions allowed, to protect against kubelet insanity
 const maxDeletionFiles = 256
 
+var (
+	errServiceUnavailable = errors.New("cilium api not available")
+)
+
 // NewDeletionFallbackClient creates a client that will either issue an EndpointDelete
 // request via the api, *or* queue one in a temporary directory.
 // To prevent race conditions, the logic is:
@@ -70,8 +74,7 @@ func NewDeletionFallbackClient(logger *slog.Logger) (*DeletionFallbackClient, er
 	if err := dc.tryConnect(); err == nil {
 		dc.logger.Info("Successfully connected to API on second try.")
 		// hey, it's back up!
-		dc.lockfile.Unlock()
-		dc.lockfile = nil
+		dc.unlockQueue()
 		return dc, nil
 	}
 
@@ -122,67 +125,81 @@ func (dc *DeletionFallbackClient) tryQueueLock() error {
 	return nil
 }
 
+func (dc *DeletionFallbackClient) unlockQueue() {
+	if dc.lockfile != nil {
+		dc.lockfile.Unlock()
+		dc.lockfile = nil
+	}
+}
+
 // EndpointDeleteMany deletes multiple endpoints based on the endpoint deletion request,
 // either by directly accessing the API or dropping in a queued-deletion file.
 func (dc *DeletionFallbackClient) EndpointDeleteMany(req *models.EndpointBatchDeleteRequest) error {
-	if dc.cli != nil {
-		startTime := time.Now()
-		err := dc.cli.EndpointDeleteMany(req)
-		if err == nil {
-			dc.logger.Debug("Endpoint delete request successful",
-				logfields.Request, req,
-				logfields.Duration, time.Since(startTime),
-			)
-			return nil
-		}
+	err := dc.deleteEndpointsBatch(req)
+	// Propagate the error if its not related to service unavailability.
+	if err == nil || !errors.Is(err, errServiceUnavailable) {
+		return err
+	}
 
+	// If the Endpoint Deletion request to cilium-agent failed, fallback to
+	// queuing the deletion.
+	dc.logger.Debug("Failed to delete Endpoints batch, ServiceUnvailable",
+		logfields.Request, req,
+		logfields.Error, err,
+	)
+
+	// Lock might already be acquired if the initial connection in client constructor
+	// failed.
+	if dc.lockfile == nil {
+		if err := dc.tryQueueLock(); err != nil {
+			return fmt.Errorf("failed to acquire deletion queue lock: %w", err)
+		}
+		defer dc.unlockQueue()
+
+		err = dc.deleteEndpointsBatch(req)
+	}
+
+	// Only enqueue the Deletion request if the failure is API server related, so cilium-agent
+	// can retry when DeletionQueue is replayed.
+	if err != nil && errors.Is(err, errServiceUnavailable) {
+		return dc.enqueueDeletionRequestLocked(req)
+	}
+
+	return err
+}
+
+func (dc *DeletionFallbackClient) deleteEndpointsBatch(req *models.EndpointBatchDeleteRequest) error {
+	if dc.cli == nil {
+		return errServiceUnavailable
+	}
+
+	err := dc.cli.EndpointDeleteMany(req)
+	if err != nil {
 		status, ok := err.(runtime.ClientResponseStatus)
 		if !ok || !status.IsCode(http.StatusServiceUnavailable) {
-			// Propagate unhandled Endpoint delete errors.
+			// Propagate unhandled server side Endpoint delete errors.
 			return err
 		}
 
-		// Fallback to queuing endpoint delete if cilium Endpoint service is unavailable.
-		// Once ready, cilium-agent will process all the pending deletes in this queue.
-		dc.logger.Debug(
-			"Received ServiceUnavailable response from server for batch Endpoint Delete request",
-			logfields.Request, req,
-		)
-
-		// If we don't already have lock on the local endpoint deletion queue, try acquire it.
-		if dc.lockfile == nil {
-			dc.logger.Debug("Deletion Queue lock not already held, reprocessing delete request with locked queue")
-			if err = dc.tryQueueLock(); err != nil {
-				// LockFile nil check to make sure we don't end up in an inifinite loop.
-				return fmt.Errorf("failed to acquire deletion queue lock: %w", err)
-			}
-
-			// Once we have the lock reprocess the Endpoint delete request. This is to make sure
-			// we don't race with an already proccessed cilium-agent endpoint deletion queue while
-			// we waited to acquire the lock.
-			return dc.EndpointDeleteMany(req)
-		}
+		return errServiceUnavailable
 	}
 
-	// fall-back mode
-	if dc.lockfile != nil {
-		dc.logger.Info(
-			"Queueing endpoint batch deletion request",
-			logfields.Request, req,
-		)
-		b, err := req.MarshalBinary()
-		if err != nil {
-			return fmt.Errorf("failed to marshal endpoint delete request: %w", err)
-		}
-		return dc.enqueueDeletionRequestLocked(string(b))
-	}
-
-	return errors.New("attempt to delete with no valid connection")
+	return nil
 }
 
 // enqueueDeletionRequestLocked enqueues the encoded endpoint deletion request into the
 // endpoint deletion queue. Requires the caller to hold the deletion queue lock.
-func (dc *DeletionFallbackClient) enqueueDeletionRequestLocked(contents string) error {
+func (dc *DeletionFallbackClient) enqueueDeletionRequestLocked(req *models.EndpointBatchDeleteRequest) error {
+	dc.logger.Info(
+		"Queueing endpoint batch deletion request",
+		logfields.Request, req,
+	)
+
+	contents, err := req.MarshalBinary()
+	if err != nil {
+		return fmt.Errorf("failed to marshal endpoint delete request: %w", err)
+	}
+
 	// sanity check: if there are too many queued deletes, just return error
 	// back up to the kubelet. If we get here, it's either because something
 	// has gone wrong with the kubelet, or the agent has been down for a very
@@ -204,11 +221,11 @@ func (dc *DeletionFallbackClient) enqueueDeletionRequestLocked(contents string) 
 
 	// hash endpoint id for a random filename
 	h := sha256.New()
-	h.Write([]byte(contents))
+	h.Write(contents)
 	filename := fmt.Sprintf("%x.delete", h.Sum(nil))
 	path := filepath.Join(defaults.DeleteQueueDir, filename)
 
-	err = os.WriteFile(path, []byte(contents), 0644)
+	err = os.WriteFile(path, contents, 0644)
 	if err != nil {
 		dc.logger.Error(
 			"Failed to write deletion file",
